@@ -1,6 +1,7 @@
 module NumRelSpherical
 
 using LinearAlgebra
+using Interpolations
 
 include("./Parameters.jl")
 include("./Grid.jl")

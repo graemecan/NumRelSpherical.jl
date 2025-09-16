@@ -109,7 +109,7 @@ function get_flat_initial_state(r, num_points, drn_matrix, dr)
 
 end
 
-function get_scalar_collapse_initial_state(r, num_points, drn_matrix, dr, amp, mu, sigma)
+function get_scalar_collapse_initial_state(r, num_points, drn_matrix, dr, amp, siggy, N_for_ham)
 
     initial_state = zeros((NUM_VARS, num_points))
 
@@ -128,7 +128,7 @@ function get_scalar_collapse_initial_state(r, num_points, drn_matrix, dr, amp, m
     br = view(initial_state, idx_br, :)
     lapse = view(initial_state, idx_lapse, :)
 
-    u[:] = amp .* r.^3 .* exp.(-((r .- mu) ./ sigma).^2)
+    u[:] = amp .* exp.(-(r ./ sigma).^2)
 
     grr = ones(num_points)
     gtt_over_r2 = grr
@@ -136,7 +136,11 @@ function get_scalar_collapse_initial_state(r, num_points, drn_matrix, dr, amp, m
     phys_gamma_over_r4sin2theta = grr .* gtt_over_r2 .* gpp_over_r2sintheta
 
     # Sign error in Baumgarte Eqn 2
-    phi[:] = (1.0/12.0) .* log.(phys_gamma_over_r4sin2theta)
+    #phi[:] = (1.0/12.0) .* log.(phys_gamma_over_r4sin2theta)
+
+    r_other_grid, phi_other_grid = solve_hamilton_constraint(r[end], N_for_ham, 1.0, amp, siggy, 1.5e-11, 30)
+    interp_linear_extrap = linear_interpolation(r_other_grid, phi_other_grid, extrapolation_bc=Line());
+    phi = interp_linear_extrap(r)
 
     # Cap phi
     phi[:] .= min.(phi, 10.0)
@@ -167,3 +171,75 @@ function get_scalar_collapse_initial_state(r, num_points, drn_matrix, dr, amp, m
     return initial_state
 
 end
+
+function solve_hamilton_constraint(R=1.0, N=200, phiR=0.0, A=1.0, sigma=0.5, tol=1e-10, maxits=50)
+    dr = R / N
+    r = collect(LinRange(0, R, N+1))
+
+    phi = ones(N+1)
+
+    function S(r_val, phi_val)
+        return -pi * phi_val * ((4.0*r_val^2)/sigma^4) * (A^2) * exp(-(2.0*r_val^2)/sigma^2)
+    end
+
+    function dS_dphi(r_val, phi_val)
+        return -pi * ((4.0*r_val^2)/sigma^4) * (A^2) * exp(-(2.0*r_val^2)/sigma^2)
+    end
+    
+    for it in range(1,maxits)
+        F = zeros(N+1)
+
+        lap0 = 6.0 * (phi[2]-phi[1]) / dr^2
+        F[1] = lap0 - S(r[1], phi[1])
+
+        for i in range(2, N)
+            rp = (r[i] + dr/2)^2
+            rm = (r[i] - dr/2)^2
+            f_plus = rp * (phi[i+1] - phi[i]) / dr
+            f_minus = rm * (phi[i] - phi[i-1]) / dr
+            lap_i = (f_plus - f_minus) / (dr * r[i]^2)
+            F[i] = lap_i - S(r[i], phi[i])
+        end
+
+        F[N+1] = phiR - phi[N+1]
+
+        res_norm = norm(F, Inf)
+        print("iter: $it ||F||_inf = $res_norm \n")
+        if res_norm < tol
+            break
+        end
+
+        diag_main = zeros(N+1)
+        diag_lower = zeros(N)
+        diag_upper = zeros(N)
+
+        diag_main[1] = -6.0 / dr^2 - dS_dphi(r[1], phi[1])
+        diag_upper[1] = 6.0 / dr^2
+
+        for i in range(2, N)
+            rp = (r[i] + dr/2)^2
+            rm = (r[i] - dr/2)^2
+            denom = dr * r[i]^2
+            a_ip1 = rp / (dr * denom)
+            a_im1 = rm / (dr * denom)
+            a_i = -(rp + rm) / (dr * denom)
+
+            diag_lower[i-1] = a_im1
+            diag_main[i] = a_i - dS_dphi(r[i], phi[i])
+            diag_upper[i] = a_ip1
+        end
+
+        diag_main[N+1] = 1.0
+
+        J = diagm(-1=>diag_lower, 0=>diag_main, 1=>diag_upper)
+
+        dx = J \ -F
+        phi .+= dx
+    end
+
+    return r, phi
+    
+end
+
+
+
